@@ -1,0 +1,16 @@
+{
+  "name": "jquery-ci-runner",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Headless Chromium 79 runner for the jQuery QUnit browser suite (CI only, not shipped)",
+  "main": "run-qunit.js",
+  "scripts": {
+    "test": "node run-qunit.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "puppeteer": "2.0.0"
+  }
+}

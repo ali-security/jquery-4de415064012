@@ -1,0 +1,144 @@
+name: build
+
+# Rebuilds the npm tarball jquery-1.11.1.tgz (content-identical to the one
+# published on registry.npmjs.org on 2014-05-01) and uploads it as an artifact.
+# Tests are not run here; they run on Travis (.travis.yml).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      NODE_VERSION: '0.10.48'
+      # npm registry time machine pinned to the 1.11.1 publish time, so the
+      # dependency tree (notably uglify-js) resolves as it did in 2014.
+      TM_REGISTRY: 'https://:2014-05-01T18%3A05%3A32.863Z@time-machines-npm.sealsecurity.io/'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install faketime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y faketime
+
+      - name: Install Node.js ${{ env.NODE_VERSION }} (bundled npm 2.15.1) via nvm
+        run: |
+          set -e
+          curl -fsSL -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+          export NVM_DIR="$HOME/.nvm"
+          source "$NVM_DIR/nvm.sh"
+          nvm install "$NODE_VERSION"
+          nvm use "$NODE_VERSION"
+          node -v
+          npm -v
+
+      - name: npm install (registry time machine)
+        run: |
+          set -e
+          export NVM_DIR="$HOME/.nvm"
+          source "$NVM_DIR/nvm.sh"
+          nvm use "$NODE_VERSION"
+          npm config set registry "$TM_REGISTRY"
+          npm install --registry="$TM_REGISTRY"
+          ls node_modules node_modules/.bin
+
+      - name: Build dist with grunt (time frozen at original release build time)
+        run: |
+          set -e
+          export NVM_DIR="$HOME/.nvm"
+          source "$NVM_DIR/nvm.sh"
+          nvm use "$NODE_VERSION"
+          # build:*:* stamps @DATE via new Date().toISOString() (UTC, minutes
+          # precision) and the uglify banner uses the current year; the public
+          # file says "Date: 2014-05-01T17:42Z" and "(c) 2005, 2014".
+          # Lint gates (jsonlint/jshint/jscs) and compare_size are skipped.
+          TZ=UTC faketime '2014-05-01 17:42:30' ./node_modules/.bin/grunt 'build:*:*' uglify 'dist:*'
+          grep -q 'Date: 2014-05-01T17:42Z' dist/jquery.js
+          grep -q '(c) 2005, 2014 jQuery Foundation' dist/jquery.min.js
+          git diff --stat -- dist
+
+      - name: Create dist/cdn release copies (build/release.js makeReleaseCopies)
+        run: |
+          set -e
+          export NVM_DIR="$HOME/.nvm"
+          source "$NVM_DIR/nvm.sh"
+          nvm use "$NODE_VERSION"
+          cat > /tmp/make-cdn-copies.js <<'EOF'
+          // Mirrors makeReleaseCopies() from build/release.js (without shelljs).
+          var fs = require( "fs" ),
+              version = require( process.cwd() + "/package.json" ).version,
+              cdnFolder = "dist/cdn",
+              releaseFiles = {
+                "jquery-VER.js": "dist/jquery.js",
+                "jquery-VER.min.js": "dist/jquery.min.js",
+                "jquery-VER.min.map": "dist/jquery.min.map",
+                "jquery.js": "dist/jquery.js",
+                "jquery.min.js": "dist/jquery.min.js",
+                "jquery.min.map": "dist/jquery.min.map",
+                "jquery-latest.js": "dist/jquery.js",
+                "jquery-latest.min.js": "dist/jquery.min.js",
+                "jquery-latest.min.map": "dist/jquery.min.map"
+              };
+          if ( !fs.existsSync( cdnFolder ) ) {
+              fs.mkdirSync( cdnFolder );
+          }
+          Object.keys( releaseFiles ).forEach(function( key ) {
+              var text,
+                builtFile = releaseFiles[ key ],
+                unpathedFile = key.replace( /VER/g, version ),
+                releaseFile = cdnFolder + "/" + unpathedFile;
+              if ( /\.map$/.test( releaseFile ) ) {
+                text = fs.readFileSync( builtFile, "utf8" )
+                  .replace( /"file":"([^"]+)","sources":\["([^"]+)"\]/,
+                    "\"file\":\"" + unpathedFile.replace( /\.min\.map/, ".min.js" ) +
+                    "\",\"sources\":[\"" + unpathedFile.replace( /\.min\.map/, ".js" ) + "\"]" );
+                fs.writeFileSync( releaseFile, text );
+              } else if ( /\.min\.js$/.test( releaseFile ) ) {
+                text = fs.readFileSync( builtFile, "utf8" )
+                  .replace( /\/\/# sourceMappingURL=\S+/, "" );
+                fs.writeFileSync( releaseFile, text );
+              } else {
+                fs.writeFileSync( releaseFile, fs.readFileSync( builtFile ) );
+              }
+              console.log( "Created " + releaseFile );
+          });
+          EOF
+          node /tmp/make-cdn-copies.js
+          ls -l dist dist/cdn
+
+      - name: npm pack
+        run: |
+          set -e
+          export NVM_DIR="$HOME/.nvm"
+          source "$NVM_DIR/nvm.sh"
+          nvm use "$NODE_VERSION"
+          # .npmignore does not exclude .github/; drop it so this workflow
+          # file does not end up in the published-equivalent tarball.
+          rm -rf .github
+          npm pack
+          mkdir -p out
+          mv jquery-1.11.1.tgz out/
+
+      - name: List tarball contents
+        run: |
+          set -e
+          ls -l out
+          sha256sum out/jquery-1.11.1.tgz
+          tar tzvf out/jquery-1.11.1.tgz
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: jquery-1.11.1
+          path: out/jquery-1.11.1.tgz
+          if-no-files-found: error

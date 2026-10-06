@@ -1,3 +1,27 @@
 language: node_js
 node_js:
 - '0.10'
+dist: focal
+before_install:
+- sudo apt-get update
+- >-
+  sudo apt-get install -y --no-install-recommends php-cli
+  ca-certificates fonts-liberation libasound2 libatk-bridge2.0-0 libatk1.0-0
+  libcairo2 libcups2 libdbus-1-3 libdrm2 libexpat1 libfontconfig1 libgbm1
+  libglib2.0-0 libgtk-3-0 libnspr4 libnss3 libpango-1.0-0 libpangocairo-1.0-0
+  libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxext6
+  libxfixes3 libxi6 libxkbcommon0 libxrandr2 libxrender1 libxss1 libxtst6
+- php --version
+script:
+# Lint + build (produces dist/jquery.js and dist/jquery.min.js used by test/index.html)
+- npm test
+# Serve the repo root with PHP so test/data/*.php endpoints work; several
+# workers so name.php?wait=5 requests don't block the rest of the suite
+- PHP_CLI_SERVER_WORKERS=4 php -S localhost:8000 > /tmp/php.log 2>&1 &
+# Run the QUnit suite in headless Chrome under Node 18, in a subshell so the
+# job's node 0.10 is left untouched; a non-zero exit fails the build
+# (puppeteer's Chrome download can take >10 min with no output, hence travis_wait)
+- travis_wait 30 bash -c 'source ~/.nvm/nvm.sh && nvm install 18 && cd test/ci && npm install --no-audit --no-fund'
+- bash -c 'source ~/.nvm/nvm.sh && nvm use 18 && cd test/ci && node run-qunit.js http://localhost:8000/test/index.html'
+after_failure:
+- cat /tmp/php.log
